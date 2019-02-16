@@ -294,14 +294,6 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
 
             log.debug(panGesture.state, ">>> translation = \(translation.y), velocity = \(velocity.y)")
 
-            if let animator = self.animator {
-                if animator.isInterruptible == false {
-                    return
-                }
-                animator.stopAnimation(true)
-                self.animator = nil
-            }
-
             if shouldScrollViewHandleTouch(scrollView, point: location, velocity: velocity) {
                 return
             }
@@ -370,10 +362,24 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     private func panningBegan() {
         // A user interaction does not always start from Began state of the pan gesture
         // because it can be recognized in scrolling a content in a content view controller.
-        // So here just preserve the current state if needed.
+        // So just cancel the active animation or preserve the current state if needed.
         log.debug("panningBegan")
-        if state != .full, let scrollView = scrollView {
-            initialScrollOffset = scrollView.contentOffset
+        if let animator = self.animator {
+            if animator.isInterruptible == false {
+                return
+            }
+            animator.stopAnimation(false)
+            animator.finishAnimation(at: .current)
+            self.animator = nil
+
+            // A user can stop a panel at the nearest Y of a target position
+            if fabs(surfaceView.frame.minY - layoutAdapter.topY) < 1 {
+                surfaceView.frame.origin.y = layoutAdapter.topY
+            }
+        } else {
+            if state != .full, let scrollView = scrollView {
+                initialScrollOffset = scrollView.contentOffset
+            }
         }
     }
 
