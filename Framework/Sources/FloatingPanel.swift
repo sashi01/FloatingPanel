@@ -25,7 +25,6 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
             scrollIndictorVisible = scrollView.showsVerticalScrollIndicator
         }
     }
-    weak var userScrollViewDelegate: UIScrollViewDelegate?
 
     private(set) var state: FloatingPanelPosition = .hidden {
         didSet { viewcontroller.delegate?.floatingPanelDidChangePosition(viewcontroller) }
@@ -39,7 +38,16 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     let panGestureRecognizer: FloatingPanelPanGestureRecognizer
     var isRemovalInteractionEnabled: Bool = false
 
-    fileprivate var animator: UIViewPropertyAnimator?
+    fileprivate var animator: UIViewPropertyAnimator? {
+        didSet {
+            if animator != nil {
+                startDisablingScrollDecelerationIfNeeded()
+            } else {
+                endDisablingScrollDecelerationIfNeeded()
+            }
+        }
+    }
+
     private var initialFrame: CGRect = .zero
     private var initialScrollOffset: CGPoint = .zero
     private var initialTranslationY: CGFloat = 0
@@ -49,6 +57,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
 
     // Scroll handling
     private var stopScrollDeceleration: Bool = false
+    private var stopScrollDisplayLink: CADisplayLink?
     private var scrollBouncable = false
     private var scrollIndictorVisible = false
 
@@ -239,7 +248,10 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         case scrollView?.panGestureRecognizer:
             guard let scrollView = scrollView else { return }
 
-            log.debug("SrollPanGesture ScrollView.contentOffset >>>", scrollView.contentOffset.y, scrollView.contentSize, scrollView.bounds.size)
+            log.debug("ScrollPanGesture(\(panGesture.state)) ---",
+                "content offset = \(scrollView.contentOffset),",
+                "content size = \(scrollView.contentSize),",
+                "bounds = \(scrollView.bounds.size)")
 
             // Prevent scoll slip by the top bounce when the scroll view's height is
             // less than the content's height
@@ -260,12 +272,6 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
                         scrollView.contentOffset.y = scrollView.contentOffsetZero.y
                     }
                 case .half, .tip:
-                    guard scrollView.isDecelerating == false else {
-                        // Don't fix the scroll offset in animating the panel to half and tip.
-                        // It causes a buggy scrolling deceleration because `state` becomes
-                        // a target position in animating the panel on the interaction from full.
-                        return
-                    }
                     // Fix the scroll offset in moving the panel from half and tip.
                     scrollView.contentOffset.y = initialScrollOffset.y
                 case .hidden:
@@ -286,11 +292,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
             let translation = panGesture.translation(in: panGesture.view!.superview)
             let location = panGesture.location(in: panGesture.view)
 
-            log.debug(panGesture.state, ">>>", "translation: \(translation.y), velocity: \(velocity.y)")
-
-            if shouldScrollViewHandleTouch(scrollView, point: location, velocity: velocity) {
-                return
-            }
+            log.debug(panGesture.state, ">>> translation = \(translation.y), velocity = \(velocity.y)")
 
             if let animator = self.animator {
                 if animator.isInterruptible == false {
@@ -298,6 +300,10 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
                 }
                 animator.stopAnimation(true)
                 self.animator = nil
+            }
+
+            if shouldScrollViewHandleTouch(scrollView, point: location, velocity: velocity) {
+                return
             }
 
             if interactionInProgress == false,
@@ -348,13 +354,10 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
             return false
         }
 
-        log.debug("ScrollView.contentOffset >>>", scrollView.contentOffset.y)
+        log.debug("Scroll offset ---", scrollView.contentOffset.y)
 
         let offset = scrollView.contentOffset.y - scrollView.contentOffsetZero.y
         if  abs(offset) > offsetThreshold {
-            return true
-        }
-        if scrollView.isDecelerating {
             return true
         }
         if velocity.y < 0 {
@@ -567,6 +570,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
             self.animator = nil
             self.finishAnimation(at: targetPosition)
         }
+        // Must assign the `animator` property before starting an animation to stop a sroll deceleration well
         self.animator = animator
         animator.startAnimation()
 
@@ -804,32 +808,35 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         scrollView.showsVerticalScrollIndicator = scrollIndictorVisible
     }
 
-
-    // MARK: - UIScrollViewDelegate Intermediation
-    override func responds(to aSelector: Selector!) -> Bool {
-        return super.responds(to: aSelector) || userScrollViewDelegate?.responds(to: aSelector) == true
-    }
-
-    override func forwardingTarget(for aSelector: Selector!) -> Any? {
-        if userScrollViewDelegate?.responds(to: aSelector) == true {
-            return userScrollViewDelegate
-        } else {
-            return super.forwardingTarget(for: aSelector)
-        }
-    }
-
-    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+    private func startDisablingScrollDecelerationIfNeeded() {
+        self.stopScrollDisplayLink?.invalidate()
         if stopScrollDeceleration {
-            targetContentOffset.pointee = scrollView.contentOffset
-            stopScrollDeceleration = false
+            let stopScrollDisplayLink = CADisplayLink(target: self, selector: #selector(tick(displayLink:)))
+            stopScrollDisplayLink.add(to: .main, forMode: .commonModes)
+            self.stopScrollDisplayLink = stopScrollDisplayLink
+            self.stopScrollingWithDeceleration(at: initialScrollOffset)
         } else {
-            let targetOffset = targetContentOffset.pointee
-            userScrollViewDelegate?.scrollViewWillEndDragging?(scrollView, withVelocity: velocity, targetContentOffset: targetContentOffset)
-            // Stop scrolling on tip and half
-            if state != .full, targetOffset == targetContentOffset.pointee {
-                targetContentOffset.pointee.y = scrollView.contentOffset.y
-            }
+            self.stopScrollDisplayLink = nil
         }
+    }
+
+    private func endDisablingScrollDecelerationIfNeeded() {
+        if stopScrollDeceleration {
+            // This is necessary if displaylink tick is delay from a scroll deceleration
+            self.stopScrollingWithDeceleration(at: initialScrollOffset)
+            self.stopScrollDisplayLink?.invalidate()
+            self.stopScrollDisplayLink = nil
+        }
+    }
+
+    private func stopScrollingWithDeceleration(at contentOffset: CGPoint) {
+        // Must use setContentOffset(_:animated) to force-stop deceleration
+        scrollView?.setContentOffset(contentOffset, animated: false)
+    }
+
+    @objc
+    func tick(displayLink: CADisplayLink) {
+        self.stopScrollingWithDeceleration(at: initialScrollOffset)
     }
 }
 
