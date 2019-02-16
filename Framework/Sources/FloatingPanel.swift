@@ -25,7 +25,6 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
             scrollIndictorVisible = scrollView.showsVerticalScrollIndicator
         }
     }
-    weak var userScrollViewDelegate: UIScrollViewDelegate?
 
     private(set) var state: FloatingPanelPosition = .hidden {
         didSet { viewcontroller.delegate?.floatingPanelDidChangePosition(viewcontroller) }
@@ -39,7 +38,16 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     let panGestureRecognizer: FloatingPanelPanGestureRecognizer
     var isRemovalInteractionEnabled: Bool = false
 
-    fileprivate var animator: UIViewPropertyAnimator?
+    fileprivate var animator: UIViewPropertyAnimator? {
+        didSet {
+            if animator != nil {
+                startDisablingScrollDecelerationIfNeeded()
+            } else {
+                endDisablingScrollDecelerationIfNeeded()
+            }
+        }
+    }
+
     private var initialFrame: CGRect = .zero
     private var initialScrollOffset: CGPoint = .zero
     private var initialTranslationY: CGFloat = 0
@@ -50,6 +58,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
 
     // Scroll handling
     private var stopScrollDeceleration: Bool = false
+    private var stopScrollDisplayLink: CADisplayLink?
     private var scrollBouncable = false
     private var scrollIndictorVisible = false
 
@@ -599,6 +608,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
             guard let `self` = self else { return }
             self.finishAnimation(at: targetPosition)
         }
+        // Must assign the `animator` property before starting an animation to stop a sroll deceleration well
         self.animator = animator
         animator.startAnimation()
 
@@ -839,32 +849,35 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         scrollView.showsVerticalScrollIndicator = scrollIndictorVisible
     }
 
-
-    // MARK: - UIScrollViewDelegate Intermediation
-    override func responds(to aSelector: Selector!) -> Bool {
-        return super.responds(to: aSelector) || userScrollViewDelegate?.responds(to: aSelector) == true
-    }
-
-    override func forwardingTarget(for aSelector: Selector!) -> Any? {
-        if userScrollViewDelegate?.responds(to: aSelector) == true {
-            return userScrollViewDelegate
-        } else {
-            return super.forwardingTarget(for: aSelector)
-        }
-    }
-
-    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+    private func startDisablingScrollDecelerationIfNeeded() {
+        self.stopScrollDisplayLink?.invalidate()
         if stopScrollDeceleration {
-            targetContentOffset.pointee = scrollView.contentOffset
-            stopScrollDeceleration = false
+            let stopScrollDisplayLink = CADisplayLink(target: self, selector: #selector(tick(displayLink:)))
+            stopScrollDisplayLink.add(to: .main, forMode: .commonModes)
+            self.stopScrollDisplayLink = stopScrollDisplayLink
+            self.stopScrollingWithDeceleration(at: initialScrollOffset)
         } else {
-            let targetOffset = targetContentOffset.pointee
-            userScrollViewDelegate?.scrollViewWillEndDragging?(scrollView, withVelocity: velocity, targetContentOffset: targetContentOffset)
-            // Stop scrolling on tip and half
-            if state != .full, targetOffset == targetContentOffset.pointee {
-                targetContentOffset.pointee.y = scrollView.contentOffset.y
-            }
+            self.stopScrollDisplayLink = nil
         }
+    }
+
+    private func endDisablingScrollDecelerationIfNeeded() {
+        if stopScrollDeceleration {
+            // This is necessary if displaylink tick is delay from a scroll deceleration
+            self.stopScrollingWithDeceleration(at: initialScrollOffset)
+            self.stopScrollDisplayLink?.invalidate()
+            self.stopScrollDisplayLink = nil
+        }
+    }
+
+    private func stopScrollingWithDeceleration(at contentOffset: CGPoint) {
+        // Must use setContentOffset(_:animated) to force-stop deceleration
+        scrollView?.setContentOffset(contentOffset, animated: false)
+    }
+
+    @objc
+    func tick(displayLink: CADisplayLink) {
+        self.stopScrollingWithDeceleration(at: initialScrollOffset)
     }
 }
 
