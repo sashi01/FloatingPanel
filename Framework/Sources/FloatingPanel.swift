@@ -543,6 +543,12 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
 
         isDecelerating = true
 
+        // Workaround: Prevent scroll offset bounce in a panel animating
+        let isScrollEnabled = scrollView?.isScrollEnabled
+        if targetPosition != .full {
+            scrollView?.isScrollEnabled = false
+        }
+
         let velocityVector = (distance != 0) ? CGVector(dx: 0, dy: min(fabs(velocity.y)/distance, 30.0)) : .zero
         let animator = behavior.interactionAnimator(self.viewcontroller, to: targetPosition, with: velocityVector)
         animator.addAnimations { [weak self] in
@@ -563,6 +569,11 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         }
         self.animator = animator
         animator.startAnimation()
+
+        // Workaround: Reset `isScrollEnabled`
+        if targetPosition != .full, let isScrollEnabled = isScrollEnabled {
+            scrollView?.isScrollEnabled = isScrollEnabled
+        }
     }
 
     private func finishAnimation(at targetPosition: FloatingPanelPosition) {
