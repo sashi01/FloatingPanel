@@ -486,7 +486,6 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         }
 
         viewcontroller.delegate?.floatingPanelDidEndDragging(viewcontroller, withVelocity: velocity, targetPosition: targetPosition)
-        viewcontroller.delegate?.floatingPanelWillBeginDecelerating(viewcontroller)
 
         startAnimation(to: targetPosition, at: distance, with: velocity)
     }
@@ -561,6 +560,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         log.debug("startAnimation", targetPosition, distance, velocity)
 
         isDecelerating = true
+        viewcontroller.delegate?.floatingPanelWillBeginDecelerating(viewcontroller)
 
         // Workaround: Prevent scroll offset bounce in a panel animating
         let isScrollEnabled = scrollView?.isScrollEnabled
@@ -577,12 +577,6 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         }
         animator.addCompletion { [weak self] pos in
             guard let `self` = self else { return }
-            self.isDecelerating = false
-            guard
-                self.interactionInProgress == false,
-                animator == self.animator
-                else { return }
-            self.animator = nil
             self.finishAnimation(at: targetPosition)
         }
         // Must assign the `animator` property before starting an animation to stop a sroll deceleration well
@@ -597,6 +591,9 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
 
     private func finishAnimation(at targetPosition: FloatingPanelPosition) {
         log.debug("finishAnimation \(targetPosition)")
+        self.isDecelerating = false
+        self.animator = nil
+
         self.viewcontroller.delegate?.floatingPanelDidEndDecelerating(self.viewcontroller)
 
         stopScrollDeceleration = false
