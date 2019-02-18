@@ -585,8 +585,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
             self.isDecelerating = false
             guard
                 self.interactionInProgress == false,
-                animator == self.animator,
-                pos == .end
+                animator == self.animator
                 else { return }
             self.animator = nil
             self.finishAnimation(at: targetPosition)
