@@ -299,27 +299,19 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
 
             log.debug(panGesture.state, ">>>", "translation: \(translation.y), velocity: \(velocity.y)")
 
-            if shouldScrollViewHandleTouch(scrollView, point: location, velocity: velocity) {
-                return
-            }
-
-            if let animator = self.animator {
-                if animator.isInterruptible == false {
-                    return
-                }
-                animator.stopAnimation(true)
-                self.animator = nil
-            }
-
-            if interactionInProgress == false,
-                viewcontroller.delegate?.floatingPanelShouldBeginDragging(viewcontroller) == false {
-                return
-            }
-
             switch panGesture.state {
             case .began:
                 panningBegan(at: location)
             case .changed:
+                if interactionInProgress == false,
+                    viewcontroller.delegate?.floatingPanelShouldBeginDragging(viewcontroller) == false {
+                    return
+                }
+
+                if shouldScrollViewHandleTouch(scrollView, point: location, velocity: velocity) {
+                    return
+                }
+
                 if interactionInProgress == false {
                     startInteraction(with: translation, in: location)
                 }
@@ -390,12 +382,12 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         // So just cancel the active animation or preserve the current state if needed.
         log.debug("panningBegan")
         if let animator = self.animator {
+            log.debug("------ Cancel animation")
             if animator.isInterruptible == false {
                 return
             }
             animator.stopAnimation(false)
-            animator.finishAnimation(at: .current)
-            self.animator = nil
+            animator.finishAnimation(at: .current) // self.animator will be nil
 
             // A user can stop a panel at the nearest Y of a target position
             if fabs(surfaceView.frame.minY - layoutAdapter.topY) < 1 {
@@ -479,6 +471,11 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
 
     private func panningEnd(with translation: CGPoint, velocity: CGPoint) {
         log.debug("panningEnd")
+
+        guard interactionInProgress else {
+            log.debug("No interaction in progress")
+            return
+        }
 
         guard state != .hidden else {
             log.debug("Already hidden")
