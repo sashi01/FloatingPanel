@@ -43,6 +43,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     private var initialFrame: CGRect = .zero
     private var initialScrollOffset: CGPoint = .zero
     private var initialTranslationY: CGFloat = 0
+    private var initialLocation: CGPoint = .offScreen
 
     var interactionInProgress: Bool = false
     var isDecelerating: Bool = false
@@ -308,10 +309,10 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
 
             switch panGesture.state {
             case .began:
-                panningBegan()
+                panningBegan(at: location)
             case .changed:
                 if interactionInProgress == false {
-                    startInteraction(with: translation)
+                    startInteraction(with: translation, in: location)
                 }
                 panningChange(with: translation)
             case .ended, .cancelled, .failed:
@@ -328,6 +329,10 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         // When no scrollView, nothing to handle.
         guard let scrollView = scrollView else { return false }
 
+        if scrollView.isDecelerating {
+            return true
+        }
+
         // For _UISwipeActionPanGestureRecognizer
         if let scrollGestureRecognizers = scrollView.gestureRecognizers {
             for gesture in scrollGestureRecognizers {
@@ -338,6 +343,11 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
                     return true
                 }
             }
+        }
+
+        if grabberAreaFrame.contains(point),
+            !grabberAreaFrame.contains(initialLocation) {
+            return true
         }
 
         guard
@@ -365,7 +375,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         return false
     }
 
-    private func panningBegan() {
+    private func panningBegan(at location: CGPoint) {
         // A user interaction does not always start from Began state of the pan gesture
         // because it can be recognized in scrolling a content in a content view controller.
         // So just cancel the active animation or preserve the current state if needed.
@@ -383,6 +393,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
                 surfaceView.frame.origin.y = layoutAdapter.topY
             }
         } else {
+            initialLocation = location
             if state != .full, let scrollView = scrollView {
                 initialScrollOffset = scrollView.contentOffset
             }
@@ -525,13 +536,17 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         animator.startAnimation()
     }
 
-    private func startInteraction(with translation: CGPoint) {
+    private func startInteraction(with translation: CGPoint, in location: CGPoint) {
         /* Don't lock a scroll view to show a scroll indicator after hitting the top */
         log.debug("startInteraction")
 
         initialFrame = surfaceView.frame
         if state == .full, let scrollView = scrollView {
-            initialScrollOffset = scrollView.contentOffset
+            if grabberAreaFrame.contains(location) {
+                initialScrollOffset = scrollView.contentOffset
+            } else {
+                initialScrollOffset = scrollView.contentOffsetZero
+            }
         }
 
         initialTranslationY = translation.y
