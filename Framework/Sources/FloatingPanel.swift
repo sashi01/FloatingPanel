@@ -17,12 +17,29 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     var layoutAdapter: FloatingPanelLayoutAdapter
     var behavior: FloatingPanelBehavior
 
+    private var scrollObservation: NSKeyValueObservation?
     weak var scrollView: UIScrollView? {
         didSet {
-            guard let scrollView = scrollView else { return }
+            guard let scrollView = scrollView else {
+                scrollObservation?.invalidate()
+                scrollObservation = nil
+                return
+            }
             scrollView.panGestureRecognizer.addTarget(self, action: #selector(handle(panGesture:)))
             scrollBouncable = scrollView.bounces
             scrollIndictorVisible = scrollView.showsVerticalScrollIndicator
+            scrollObservation = scrollView.observe(\.contentOffset, options: [.new,.old], changeHandler: { (sv, change) in
+                // log.debug("------- Observe content offset update", sv.contentOffset, change.oldValue)
+                switch self.state {
+                case .half, .tip:
+                    // Check oldValue to prevent infinit-loop with a offset update in scrollViewDidScroll(_:) delegate method
+                    if sv.contentOffset != self.initialScrollOffset || change.oldValue != self.initialScrollOffset {
+                        sv.contentOffset = self.initialScrollOffset
+                    }
+                default:
+                    break
+                }
+            })
         }
     }
 
@@ -243,31 +260,39 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     // MARK: - Gesture handling
     private let offsetThreshold: CGFloat = 30.0 // Optimal value from testing
     @objc func handle(panGesture: UIPanGestureRecognizer) {
-        log.debug("Gesture >>>>", panGesture)
         let velocity = panGesture.velocity(in: panGesture.view)
 
         switch panGesture {
         case scrollView?.panGestureRecognizer:
             guard let scrollView = scrollView else { return }
 
-            log.debug("SrollPanGesture ScrollView.contentOffset >>>", scrollView.contentOffset.y, scrollView.contentSize, scrollView.bounds.size)
+            log.debug("Scroll pan gesture(\(panGesture.state)) ---",
+                "content offset = \(scrollView.contentOffset),",
+                "content size = \(scrollView.contentSize),",
+                "bounds = \(scrollView.bounds.size)")
 
             // Prevent scoll slip by the top bounce when the scroll view's height is
             // less than the content's height
             if scrollView.isDecelerating == false, scrollView.contentSize.height > scrollView.bounds.height {
                 scrollView.bounces = (scrollView.contentOffset.y > offsetThreshold)
+                log.debug("------ scroll bounce", scrollView.bounces)
             }
 
-            if surfaceView.frame.minY > layoutAdapter.topY {
+            let fitsToTop = surfaceView.frame.minY > layoutAdapter.topY
+            log.debug("------ fits to top -> \(fitsToTop)")
+
+            if fitsToTop || self.animator != nil {
                 // Scroll offset pinning
                 switch state {
                 case .full:
                     let point = panGesture.location(in: surfaceView)
                     if grabberAreaFrame.contains(point) {
+                        log.debug("------ reset to initial offset(\(state))", initialScrollOffset)
                         // Preserve the current content offset in moving from full.
                         scrollView.contentOffset.y = initialScrollOffset.y
                     } else {
                         // Prevent over scrolling in moving from full.
+                        log.debug("------ reset to zero")
                         scrollView.contentOffset.y = scrollView.contentOffsetZero.y
                     }
                 case .half, .tip:
@@ -278,6 +303,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
                         return
                     }
                     // Fix the scroll offset in moving the panel from half and tip.
+                    log.debug("------ reset to initial offset(\(state))", initialScrollOffset)
                     scrollView.contentOffset.y = initialScrollOffset.y
                 case .hidden:
                     break
@@ -297,8 +323,6 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
             let translation = panGesture.translation(in: panGesture.view!.superview)
             let location = panGesture.location(in: panGesture.view)
 
-            log.debug(panGesture.state, ">>>", "translation: \(translation.y), velocity: \(velocity.y)")
-
             switch panGesture.state {
             case .began:
                 panningBegan(at: location)
@@ -308,6 +332,8 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
                     return
                 }
 
+                log.debug("Panel pan gesture(\(panGesture.state)) --- location = \(location) translation = \(translation.y), velocity = \(velocity.y)")
+
                 if shouldScrollViewHandleTouch(scrollView, point: location, velocity: velocity) {
                     return
                 }
@@ -315,6 +341,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
                 if interactionInProgress == false {
                     startInteraction(with: translation, in: location)
                 }
+
                 panningChange(with: translation)
             case .ended, .cancelled, .failed:
                 panningEnd(with: translation, velocity: velocity)
@@ -380,19 +407,19 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
         // A user interaction does not always start from Began state of the pan gesture
         // because it can be recognized in scrolling a content in a content view controller.
         // So just cancel the active animation or preserve the current state if needed.
-        log.debug("panningBegan")
+        log.debug("panningBegan at", location)
         if let animator = self.animator {
-            log.debug("------ Cancel animation")
+            log.debug("Cancel animation")
             if animator.isInterruptible == false {
+                return
+            }
+            // A user can't stop a panel at the nearest Y of a target position
+            if let surfaceViewFrame = surfaceView.layer.presentation()?.frame,
+                fabs(surfaceViewFrame.minY - layoutAdapter.topY) < 10.0 {
                 return
             }
             animator.stopAnimation(false)
             animator.finishAnimation(at: .current) // self.animator will be nil
-
-            // A user can stop a panel at the nearest Y of a target position
-            if fabs(surfaceView.frame.minY - layoutAdapter.topY) < 1 {
-                surfaceView.frame.origin.y = layoutAdapter.topY
-            }
         } else {
             initialLocation = location
             if state != .full, let scrollView = scrollView {
@@ -402,7 +429,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     }
 
     private func panningChange(with translation: CGPoint) {
-        log.debug("panningChange")
+        log.debug("panningChange with", translation)
         let pre = surfaceView.frame.minY
         let dy = translation.y - initialTranslationY
 
@@ -847,6 +874,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     }
 
     private func startDisablingScrollDecelerationIfNeeded() {
+        log.debug("------ startDisablingScrollDecelerationIfNeeded", stopScrollDeceleration, initialScrollOffset)
         self.stopScrollDisplayLink?.invalidate()
         if stopScrollDeceleration {
             let stopScrollDisplayLink = CADisplayLink(target: self, selector: #selector(tick(displayLink:)))
@@ -859,6 +887,7 @@ class FloatingPanel: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate
     }
 
     private func endDisablingScrollDecelerationIfNeeded() {
+        log.debug("------ endDisablingScrollDecelerationIfNeeded", stopScrollDeceleration, initialScrollOffset)
         if stopScrollDeceleration {
             // This is necessary if displaylink tick is delay from a scroll deceleration
             self.stopScrollingWithDeceleration(at: initialScrollOffset)
